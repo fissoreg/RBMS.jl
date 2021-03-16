@@ -1,0 +1,7 @@
+name = "RestrictedBoltzmannMachines"
+uuid = "ad047197-19ea-4e68-8f36-21a7f62aef83"
+authors = ["fissoreg <giancarlo.fissore@gmail.com>"]
+version = "0.1.0"
+
+[deps]
+Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
