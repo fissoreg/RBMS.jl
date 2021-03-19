@@ -306,8 +306,6 @@ begin
 		@. rbm.hbias += Δc
 	end
 	
-	σ(x) = 1 / (1 + exp(-x))
-	
 	# TODO: include α in some parameters structure
 	function update!(rbm::AbstractRBM{T}, ΔΘ::Grad{T}; α::Float64=1e-2) where T
 		grad_apply_learning_rate!(rbm, ΔΘ, α)
