@@ -1,4 +1,4 @@
-module RestrictedBoltmannMachines
+module RBMS
 
 export
     AbstractRBM,

@@ -1,7 +1,8 @@
-name = "RestrictedBoltzmannMachines"
-uuid = "ad047197-19ea-4e68-8f36-21a7f62aef83"
+name = "RBMS"
+uuid = "c5cf1e44-048a-4e87-8f13-a13d3230b5c8"
 authors = ["fissoreg <giancarlo.fissore@gmail.com>"]
 version = "0.1.0"
 
 [deps]
 Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
+Markdown = "d6f4376e-aef5-505a-96c1-9c027394607a"
