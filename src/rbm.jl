@@ -59,7 +59,7 @@ begin
 
 	"""
 	Construct RBM. Parameters:
-	 * T - type of RBM parameters (e.g. weights and biases; by default, Float64)
+	 * T - type of RBM parameters (e.g. weights and biases; by default, Float32)
 	 * V - type of visible units
 	 * H - type of hidden units
 	 * n_vis - number of visible units
@@ -67,9 +67,10 @@ begin
 	Optional parameters:
 	 * sigma - variance to use during parameter initialization
 	"""
+	# TODO: better manage the weights init!
 	function RBM(
 		T::Type, V::Type, H::Type, n_vis::Int, n_hid::Int;
-			σ::Float64=0.01, X=nothing
+			σ::Float32=1f-2, X=nothing
 		)
 
 		vbias = X == nothing ? zeros(n_vis) : vbias_init(V, X)
@@ -81,13 +82,13 @@ begin
 		)
 	end
 
-	RBM(V::Type, H::Type, n_vis::Int, n_hid::Int; σ=0.01, X=nothing) =
-		RBM(Float64, V, H, n_vis, n_hid; σ=σ, X=X)
+	RBM(V::Type, H::Type, n_vis::Int, n_hid::Int; σ=1f-2, X=nothing) =
+		RBM(Float32, V, H, n_vis, n_hid; σ=σ, X=X)
 
 	# some well-known RBM kinds
-	"""Same as RBM{Float64,Degenerate,Bernoulli}"""
-	BernoulliRBM(n_vis::Int, n_hid::Int; σ=0.01, X=nothing) =
-		RBM(Float64, Bernoulli, Bernoulli, n_vis, n_hid; σ=σ, X=X)
+	"""Same as RBM{Float32,Degenerate,Bernoulli}"""
+	BernoulliRBM(n_vis::Int, n_hid::Int; σ=1f-2, X=nothing) =
+		RBM(Float32, Bernoulli, Bernoulli, n_vis, n_hid; σ=σ, X=X)
 end
 
 # ╔═╡ 7d4764bc-7786-11eb-0eb9-3d4ac85b9d6c
@@ -314,7 +315,7 @@ begin
 	end
 
 	# TODO: include α in some parameters structure
-	function update!(rbm::AbstractRBM{T}, ΔΘ::Grad{T}; α::Float64=1e-2) where T
+	function update!(rbm::AbstractRBM{T}, ΔΘ::Grad{T}; α::Float32=1f-2) where T
 		grad_apply_learning_rate!(rbm, ΔΘ, α)
 		update_Θ!(rbm, ΔΘ)
 	end
@@ -364,7 +365,7 @@ begin
 
 	function fit!(
 		rbm::AbstractRBM{T}, X::AbstractMatrix{T};
-		α=1e-3,
+		α::T=T(1e-3),
 		batch_size::Int=10,
 		k::Int=1,
 		shuffled::Bool=true,
@@ -405,7 +406,7 @@ begin
 	rbm = BernoulliRBM(100, 20)
 
 	bs = 10
-	X = rand(size(rbm.W, 1), 10*bs)
+	X = rand(size(rbm.W, 1), 10*bs) .|> Float32
 	CDk(rbm, X, 1)
 	fit!(rbm, X; n_epochs=100, log_every=20)
 end
