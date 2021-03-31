@@ -93,10 +93,15 @@ end
 
 # ╔═╡ 7d4764bc-7786-11eb-0eb9-3d4ac85b9d6c
 begin
-	σ(x) = 1 / (1 + exp(-x))
+	σ(x) = 1 / (1 + ℯ^-x)
 
 	function sample!(::Type{Bernoulli}, x::AbstractMatrix{T}) where T
-		r = rand(size(x)...)
+		# benchmark this!!
+		# `SpecializedArray` is introduced to make sure that the sampled values
+		# `r` have the same type as `x`. This is beneficial in general and
+		# necessary on GPU.
+		SpecializedArray = typeof(x)
+		r = rand(T, size(x)...) |> SpecializedArray
 		@. x = T(r < x)
 	end
 
@@ -110,7 +115,7 @@ begin
 
 	nonlinearity!(::Type{Unitary}, x::AbstractMatrix{T}) where T = nonlinearity!(Bernoulli, x)
 
-	function affine(W, bias::AbstractVector{T}, x::AbstractMatrix{T}) where T
+	function affine(W::AbstractMatrix{T}, bias::AbstractVector{T}, x::AbstractMatrix{T}) where T
 		W * x .+ bias
 	end
 
@@ -408,7 +413,7 @@ begin
 	bs = 10
 	X = rand(size(rbm.W, 1), 10*bs) .|> Float32
 	CDk(rbm, X, 1)
-	fit!(rbm, X; n_epochs=100, log_every=20)
+	#fit!(rbm, X; n_epochs=100, log_every=20)
 end
 
 # ╔═╡ bf6b607a-737b-11eb-1cd3-2b4d4e95b1b8
@@ -420,7 +425,7 @@ begin
 		bs = 10
 		nh = 20
 
-		X = ones(d, n)
+		X = ones(d, n) .|> Float32
 
 		batches = batchify(X, bs)
 
