@@ -1,5 +1,5 @@
 ### A Pluto.jl notebook ###
-# v0.12.21
+# v0.14.5
 
 using Markdown
 using InteractiveUtils
@@ -136,6 +136,24 @@ begin
 	end
 end
 
+# ╔═╡ 3fb0fe53-254e-4115-b645-62316ba5504a
+randn(Float32, (2, 10)...)
+
+# ╔═╡ 177a5cde-1af2-42ec-8400-00646929775f
+begin
+	function init_samples(::T, ::Type{Bernoulli}, size::NTuple{2, Int}) where T
+		rand(T.([0, 1]), size...)
+	end
+	
+	function init_samples(::T, ::Type{Unitary}, size::NTuple{2, Int}) where T
+		rand(T, size...)
+	end
+	
+	function init_samples(::T, ::Type{Gaussian}, size::NTuple{2, Int}) where T
+		randn(T, size...)
+	end
+end
+
 # ╔═╡ 01c89b7a-72c0-11eb-1061-2d697f2a980c
 begin
 	import Base: iterate
@@ -191,7 +209,7 @@ begin
 	function dispatch(iter::StopwatchIterable, t0, t_last, next)
 		if next === nothing return nothing end
 		t = time()
-		return ((t-t_last, t-t0), next[1]), ((t0, t), next[2])
+		return ((t_last=t-t_last, t_total=t-t0), next[1]), ((t0, t), next[2])
 	end
 
 	stopwatch(iter::I) where I = StopwatchIterable{I}(iter)
@@ -203,9 +221,7 @@ begin
 
 	function GibbsSampling(rbm::AbstractRBM{T,V,H}, batch_size::Int) where {T,V,H}
 		nv, _ = size(rbm.W)
-
-		# TODO: initialize based on V
-		v0 = rand(T, (nv, batch_size))
+		v0 = init_samples(T, V, (nv, batch_size))
 
 		GibbsSampling(rbm, v0)
 	end
@@ -213,7 +229,8 @@ begin
 	struct Training{T,V,H}
 		rbm::AbstractRBM{T,V,H}
 		X::AbstractMatrix{T}
-		epoch_gen::Function
+		epoch_iter::Function
+		state::NamedTuple
 	end
 
 	function iterate(iter::GibbsSampling{T,V,H}, state) where {T,V,H}
@@ -232,19 +249,15 @@ begin
 	end
 
 	function iterate(iter::Training{T,V,H}, state) where {T,V,H}
-		iterate(iter)
+		rbm, state = iter.epoch_iter(iter.rbm, X, state)
+
+		(rbm, state), state
 	end
 
 	# TODO: we don't need a state here! How to deal with it?
 	# Maybe I should return the iter itself?
 	function iterate(iter::Training{T,V,H}) where {T,V,H}
-		rbm = iter.rbm
-		X = iter.X
-		epoch = iter.epoch_gen(rbm, X)
-
-		state = consume(epoch)
-
-		rbm, state
+		iterate(iter, iter.state)
 	end
 
 	function iterate(iter::TeeIterable, args...)
@@ -263,6 +276,10 @@ begin
 		idxs = shuffled ? randperm(n) : 1:n
 		ranges = Iterators.partition(idxs, batch_size)
 		map(range -> X[:, range], ranges)
+	end
+	
+	function CDk(rbm::AbstractRBM{T}, X::AbstractMatrix{T}, state::NamedTuple) where T
+		CDk(rbm, X, state.k), state
 	end
 
 	function CDk(rbm::AbstractRBM{T}, X::AbstractMatrix{T}, k::Int) where T
@@ -297,6 +314,10 @@ begin
 		Δc
 	end
 
+	function dΘ(rbm::AbstractRBM{T}, samples::Samples{T}, state::NamedTuple) where T
+		dΘ(rbm, samples), state
+	end
+	
 	function dΘ(rbm::AbstractRBM{T}, samples::Samples{T}) where T
 		vpos, hpos, vneg, hneg = samples
 
@@ -310,6 +331,8 @@ begin
 
 	function grad_apply_learning_rate!(rbm::AbstractRBM{T}, ΔΘ::Grad{T}, α) where T
 		@. lmul!(α, ΔΘ)
+		
+		ΔΘ
 	end
 
 	function update_Θ!(rbm::AbstractRBM{T}, ΔΘ::Grad{T}) where T
@@ -317,12 +340,19 @@ begin
 		@. rbm.W += ΔW
 		@. rbm.vbias += Δb
 		@. rbm.hbias += Δc
+		
+		rbm
 	end
 
-	# TODO: include α in some parameters structure
+	function update!(rbm::AbstractRBM{T}, ΔΘ::Grad{T}, state::NamedTuple) where T
+		update!(rbm, ΔΘ; state.α), state
+	end
+	
 	function update!(rbm::AbstractRBM{T}, ΔΘ::Grad{T}; α::Float32=1f-2) where T
 		grad_apply_learning_rate!(rbm, ΔΘ, α)
 		update_Θ!(rbm, ΔΘ)
+		
+		rbm
 	end
 
 	function flip(::Type{Bernoulli}, value)
@@ -355,55 +385,134 @@ begin
 	end
 
 	# TODO: we want the loggers to be composable!
-	function console_logger(rbm, X, epoch, epoch_time, total_time)
-		batch = X[:, sample(1:size(X, 2), 100)]
+	function console_logger(rbm, X, state)
+		batch = X[:, sample(1:size(X, 2), state.batch_size)]
 		pl = pseudolikelihood(rbm, batch)
 
 		@info @sprintf(
 			"Epoch %4d | PL %4.4f | Time (epoch/total) %.3f/%.3f",
-			epoch,
+			state.epoch,
 			pl,
-			epoch_time,
-			total_time
+			state.t_last,
+			state.t_total
 		)
 	end
-
-	function fit!(
-		rbm::AbstractRBM{T}, X::AbstractMatrix{T};
-		α::T=T(1e-3),
-		batch_size::Int=10,
-		k::Int=1,
-		shuffled::Bool=true,
+	
+	default_state = (
+		α=1f-3,
+		batch_size=10,
+		k=1,
+		shuffled=true,
 		sampler=CDk,
+		gradient=dΘ,
 		n_epochs=1,
 		logger=console_logger,
 		log_every=1,
-	) where T
-
-		# TODO: unify functions signature?
-		train_epoch(rbm, X) = (X
-			|> partial(batchify, batch_size; shuffled=shuffled)
-			|> batches -> (sampler(rbm, batch, k) for batch in batches)
-			|> samples -> ((dΘ(rbm, sample), sample) for sample in samples)
-			|> states -> tee(states, state -> update!(rbm, state[1]; α=α))
-		)
-
-		epochs = Training(rbm, X, train_epoch)
-		epochs = Iterators.take(epochs, n_epochs)
-		epochs = enumerate(epochs)
-		epochs = stopwatch(epochs)
-		epochs = pick(epochs, log_every)
-
-		# TODO: better parse (or structure?) the state
-		epochs = tee(
-			epochs,
-			state -> logger(state[2][2], X, state[2][1], state[1][1], state[1][2])
-		)
-
-		consume(epochs)
-
-		rbm
+	)
+	
+	# TODO: where to ensure type for `α`?
+	init_state(state) = merge(default_state, state)
+	
+	function merge_iter_state(iter::I) where I
+		((rbm, merge(state, iter_state)) for (iter_state, (rbm, state)) in iter)
 	end
+	
+	function batchify(
+		X::AbstractMatrix{T},
+		state::NamedTuple
+	) where T
+		batches = batchify(X, state.batch_size; shuffled=state.shuffled)
+		
+		batches, state
+	end
+	
+	function sampler(
+		rbm::AbstractRBM{T},
+		batch::AbstractMatrix{T},
+		state::NamedTuple
+	) where {T}
+		state.sampler(rbm, batch, state)
+	end
+	
+	function gradient(
+		rbm::AbstractRBM{T},
+		samples::I,
+		state::NamedTuple
+	) where {T,I}
+		Iterators.map(sample -> state.gradient(rbm, sample, state), samples)
+	end
+end
+
+function train_batch(rbm::AbstractRBM{T}, batch::AbstractMatrix{T}, state::NamedTuple) where T
+	sample, state = state.sampler(rbm, batch, state)
+	ΔΘ, state = state.gradient(rbm, sample, state)
+	rbm, state = update!(rbm, ΔΘ, state)
+end
+
+function train_epoch(rbm::AbstractRBM{T}, X::AbstractMatrix{T}, state::NamedTuple) where T
+	batches, state = batchify(X, state)
+
+	for batch in batches
+		rbm, state = train_batch(rbm, batch, state)
+    end
+
+	rbm, state
+end
+
+# NOTE: the iterator approach is probably overkill for the batches loop,
+# this can be rewritten very easily as a `for` loop. No loss in readibility
+# (rather a gain, here)
+# and we probably don't need the extra flexibility that we have now
+# (you rarely want to do stuff "per-batch")
+struct TrainingEpoch{T,V,H}
+	rbm::AbstractRBM{T,V,H}
+	X::AbstractArray{T}
+	state::NamedTuple
+end
+
+function iterate(iter::TrainingEpoch{T,V,H}, state) where {T,V,H}
+	if length(state.remaining_batches) < 1
+		return nothing
+    end
+
+	batch, remaining_batches = Iterators.peel(state.remaining_batches)
+	print("Batch ", typeof(batch))
+	rbm, state = train_batch(iter.rbm, batch, state)
+
+	rbm, merge(state, (remaining_batches=remaining_batches,))
+end
+
+# TODO: define a macro to easily update the state?
+function iterate(iter::TrainingEpoch{T,V,H}) where {T,V,H}
+	batches, state = batchify(iter.X, iter.state)
+
+	iter.rbm, merge(state, (remaining_batches=batches,))
+end
+
+function fit!(rbm::AbstractRBM{T}, X::AbstractMatrix{T}, args::NamedTuple) where T
+	state = init_state(args)
+
+	epochs = Training(rbm, X, train_epoch, state)
+	epochs = Iterators.take(epochs, state.n_epochs)
+
+	epochs = enumerate(epochs)
+	epochs = (((epoch=i,), (rbm, state)) for (i, (rbm, state)) in epochs)
+	epochs = epochs |> merge_iter_state
+		
+	epochs = stopwatch(epochs) |> merge_iter_state
+	epochs = pick(epochs, state.log_every)
+		
+	epochs = tee(
+		epochs,
+		((rbm, state),) -> state.logger(rbm, X, state)
+	)
+		
+	rbm, state = consume(epochs)
+	rbm, state
+end
+	
+function fit!(rbm::AbstractRBM{T}, X::AbstractMatrix{T}; args...) where T
+	fit!(rbm, X, NamedTuple(args))
 end
 
 # ╔═╡ e961bf40-75ef-11eb-1802-6355ab8eabf0
@@ -412,8 +521,14 @@ begin
 
 	bs = 10
 	X = rand(size(rbm.W, 1), 10*bs) .|> Float32
-	CDk(rbm, X, 1)
-	#fit!(rbm, X; n_epochs=100, log_every=20)
+	CDk(rbm, X, default_state)
+	
+	fit!(rbm, X; n_epochs=10, log_every=1)
+end
+
+# ╔═╡ afc06fde-8cc7-4fd3-8358-79819a044a30
+begin
+	Iterators.map(x -> x^2, (1, 2, 3))
 end
 
 # ╔═╡ bf6b607a-737b-11eb-1cd3-2b4d4e95b1b8
@@ -443,7 +558,11 @@ end
 # ╠═4eda75bc-896a-11eb-2ab1-7580d3fcf4d1
 # ╠═c60a0d20-72c0-11eb-30f4-475ad9e6fdaf
 # ╠═7d4764bc-7786-11eb-0eb9-3d4ac85b9d6c
+# ╠═3fb0fe53-254e-4115-b645-62316ba5504a
+# ╠═177a5cde-1af2-42ec-8400-00646929775f
 # ╠═01c89b7a-72c0-11eb-1061-2d697f2a980c
 # ╠═c7c3bfc0-7785-11eb-32c1-2bedf825cf4e
+# ╠═7079e557-c26c-4572-8704-913373d3dc32
 # ╠═e961bf40-75ef-11eb-1802-6355ab8eabf0
+# ╠═afc06fde-8cc7-4fd3-8358-79819a044a30
 # ╠═bf6b607a-737b-11eb-1cd3-2b4d4e95b1b8
